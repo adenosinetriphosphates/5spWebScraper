@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+import sys
+import subprocess
+
+# Auto-install libraries
+try:
+    import matplotlib.pyplot as plt
+    import numpy as np
+except ImportError:
+    print("Installing charting libraries...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "matplotlib", "numpy", "--break-system-packages"])
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+import re, glob, os
+
+# 1. Find the latest data file
+files = glob.glob("asb_points_*.txt")
+if not files:
+    print("No results file found! Run the scanner first.")
+    sys.exit()
+latest_file = max(files, key=os.path.getctime)
+
+ids = []
+points = []
+
+# 2. Parse the data (ID is 1st column, Points is 2nd column)
+print(f"Reading: {latest_file}")
+with open(latest_file, "r") as f:
+    for line in f:
+        parts = line.split()
+        if len(parts) >= 2:
+            try:
+                # Extract digits only for ID and Points
+                s_id = int(re.search(r'\d+', parts[0]).group())
+                s_points = int(re.search(r'\d+', parts[1]).group())
+                ids.append(s_id)
+                points.append(s_points)
+            except:
+                continue
+
+if not ids:
+    print("No data found in the file yet.")
+    sys.exit()
+
+# 3. Create the Layout (3 rows of graphs)
+fig, (ax_box, ax_hist, ax_scatter) = plt.subplots(3, 1, figsize=(12, 12))
+plt.subplots_adjust(hspace=0.4)
+
+# GRAPH 1: NORMAL BOX PLOT
+# whis=[0, 100] makes the whiskers touch the absolute min/max
+ax_box.boxplot(ids, vert=False, patch_artist=True, 
+               boxprops=dict(facecolor='#a1c4fd', color='#1e3a8a'),
+               whis=[0, 100])
+ax_box.set_title(f"ID Range Overview (Found: {len(ids)})", fontsize=14)
+ax_box.set_yticks([])
+ax_box.set_xlabel("Student ID Number")
+
+# GRAPH 2: DENSITY MAP (Histogram)
+# This shows the 'abundance' of students
+ax_hist.hist(ids, bins=40, color='#1e3a8a', alpha=0.7, edgecolor='white')
+ax_hist.set_title("Student Abundance (Where are they clustered?)", fontsize=14)
+ax_hist.set_ylabel("Number of Students")
+ax_hist.set_xlabel("Student ID Number")
+
+# GRAPH 3: ID vs POINTS (Scatter Plot)
+ax_scatter.scatter(ids, points, alpha=0.6, color='red', s=40, edgecolor='black')
+ax_scatter.set_title("ID Number vs. Points Earned", fontsize=14)
+ax_scatter.set_ylabel("Points")
+ax_scatter.set_xlabel("Student ID Number")
+ax_scatter.grid(True, linestyle='--', alpha=0.5)
+
+# Format all X-axes to show normal numbers instead of scientific notation
+for ax in [ax_box, ax_hist, ax_scatter]:
+    ax.ticklabel_format(style='plain', axis='x')
+
+plt.tight_layout()
+plt.savefig('full_analysis.png')
+print("Complete! Open 'full_analysis.png' to see all three charts.")

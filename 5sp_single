@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+
+import sys
+import asyncio
+import re
+import argparse
+
+# Automatic dependency handling
+try:
+    from playwright.async_api import async_playwright
+except ImportError:
+    print("Installing Playwright...")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright", "--break-system-packages"])
+    from playwright.async_api import async_playwright
+
+SCHOOL_URL = 'https://5starstudents.com/oakvalleyms'
+
+async def get_student_data(student_id):
+    async with async_playwright() as p:
+        # Launching headless=True makes it run in the background
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        
+        print(f"Connecting to {SCHOOL_URL}...")
+        await page.goto(SCHOOL_URL, wait_until='networkidle')
+        
+        print(f"Checking ID: {student_id}...")
+        await page.fill('#lookupNumber', str(student_id))
+        await page.click('#lookupButton')
+        
+        # Wait for the results to load
+        await page.wait_for_timeout(1500)
+        
+        results = await page.evaluate('''
+            () => {
+                const rows = document.querySelectorAll('tr[data-uid]');
+                const data = [];
+                rows.forEach(row => {
+                    const cells = row.querySelectorAll('td');
+                    if (cells.length >= 3) {
+                        data.push({
+                            period: cells[0]?.textContent?.trim(),
+                            earned: cells[1]?.textContent?.trim(),
+                            remaining: cells[2]?.textContent?.trim()
+                        });
+                    }
+                });
+                return data;
+            }
+        ''')
+        
+        await browser.close()
+        return results
+
+async def main():
+    parser = argparse.ArgumentParser(
+        description="Quick Lookup for a single Student ID",
+        epilog="Example: python3 5sp_single 1931027"
+    )
+    parser.add_argument('id', type=int, help='The Student ID you want to check')
+    
+    # If no arguments are passed, show help
+    if len(sys.argv) == 1:
+        parser.print_help()
+        sys.exit(1)
+        
+    args = parser.parse_args()
+
+    data = await get_student_data(args.id)
+    
+    if data:
+        print("\n" + "="*40)
+        print(f"RESULTS FOR ID: {args.id}")
+        print("="*40)
+        for entry in data:
+            print(f"Period: {entry['period']}")
+            print(f"Points: {entry['earned']}")
+            print(f"Status: {entry['remaining']}")
+            print("-" * 20)
+    else:
+        print(f"\n[!] No data found for ID {args.id}. The ID might be invalid.")
+
+if __name__ == '__main__':
+    asyncio.run(main())

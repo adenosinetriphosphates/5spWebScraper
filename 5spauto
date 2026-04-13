@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+
+import sys
+import asyncio
+import re
+import time
+import argparse
+from datetime import datetime, timedelta
+from pathlib import Path
+
+# Automatic dependency handling
+try:
+    from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+except ImportError:
+    print("Installing Playwright...")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright", "--break-system-packages"])
+    from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+
+SCHOOL_URL = 'https://5starstudents.com/oakvalleyms'
+OUTPUT_FILE = f"asb_points_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+RESUME_FILE = ".batch_progress"
+
+class C:
+    RESET = '\033[0m'
+    BRIGHT = '\033[1m'
+    RED = '\033[31m'
+    GREEN = '\033[32m'
+    YELLOW = '\033[33m'
+    CYAN = '\033[36m'
+    BLUE = '\033[34m'
+
+def log(msg, color='RESET'):
+    print(getattr(C, color) + msg + C.RESET)
+
+async def lookup_student(page, student_id):
+    try:
+        await page.fill('#lookupNumber', '')
+        await page.fill('#lookupNumber', str(student_id))
+        await page.click('#lookupButton')
+        await page.wait_for_timeout(1000)
+        
+        results = await page.evaluate('''
+            () => {
+                const rows = document.querySelectorAll('tr[data-uid]');
+                const data = [];
+                rows.forEach(row => {
+                    const cells = row.querySelectorAll('td');
+                    if (cells.length >= 3) {
+                        const period = cells[0]?.textContent?.trim();
+                        const earned = cells[1]?.textContent?.trim();
+                        const remaining = cells[2]?.textContent?.trim();
+                        if (period && earned && remaining) {
+                            data.push({ period, earned, remaining });
+                        }
+                    }
+                });
+                return data;
+            }
+        ''')
+        
+        if not results:
+            return None
+        
+        try:
+            remaining_text = results[0]['remaining'].strip()
+            points = int(re.search(r'\d+', remaining_text).group())
+        except:
+            points = 0
+        
+        return {'id': student_id, 'points': points, 'period': results[0]['period']}
+    except Exception:
+        return None
+
+async def batch_lookup(start_id, stop_id, resume=False):
+    start_from = start_id
+    if resume and Path(RESUME_FILE).exists():
+        with open(RESUME_FILE, 'r') as f:
+            try:
+                last_id = int(f.read().strip())
+                start_from = last_id + 1
+                log(f'Resuming from ID: {start_from}', 'YELLOW')
+            except:
+                pass
+    
+    total_to_check = stop_id - start_from + 1
+    if total_to_check <= 0:
+        log("Error: Start ID is greater than Stop ID.", "RED")
+        return
+
+    log(f'Starting batch lookup: {start_from} to {stop_id} ({total_to_check} IDs)', 'CYAN')
+    
+    found = 0
+    start_time = time.time()
+    
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            log('Loading website...', 'CYAN')
+            await page.goto(SCHOOL_URL, wait_until='networkidle')
+            await page.wait_for_selector('#lookupNumber', timeout=10000)
+            
+            with open(OUTPUT_FILE, 'a') as out:
+                for i, current_id in enumerate(range(start_from, stop_id + 1)):
+                    result = await lookup_student(page, current_id)
+                    
+                    if result:
+                        found += 1
+                        status = 'GOOD' if result['points'] >= 100 else ('LOW' if result['points'] >= 50 else 'CRITICAL')
+                        out.write(f'{result["id"]:<10} {result["points"]:<8} {status:<20} {result["period"]:<20}\n')
+                        out.flush()
+                        with open(RESUME_FILE, 'w') as res:
+                            res.write(str(current_id))
+
+                    # --- Progress & Percent Logic ---
+                    processed = i + 1
+                    percent = (processed / total_to_check) * 100
+                    elapsed = time.time() - start_time
+                    avg_time = elapsed / (processed if processed > 0 else 1)
+                    remaining_count = total_to_check - processed
+                    eta_seconds = remaining_count * avg_time
+                    eta_str = str(timedelta(seconds=int(eta_seconds)))
+                    
+                    sys.stdout.write(
+                        f'\r{C.BRIGHT}{C.BLUE}[{percent:6.2f}%]{C.RESET} | '
+                        f'ID: {current_id} | Found: {found} | ETA: {eta_str} '
+                    )
+                    sys.stdout.flush()
+                    
+                    await page.wait_for_timeout(500)
+            
+            await browser.close()
+            log(f'\n\nFinished! Results saved to {OUTPUT_FILE}', 'GREEN')
+            if Path(RESUME_FILE).exists(): Path(RESUME_FILE).unlink()
+            return True
+    except asyncio.CancelledError:
+        log('\n\nPaused. Run with --resume to continue.', 'YELLOW')
+        return False
+    except Exception as e:
+        log(f'\n\nAn error occurred: {e}', 'RED')
+        return False
+
+async def main():
+    parser = argparse.ArgumentParser(
+        description="Automated Student Point Lookup Tool",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Example:\n  python3 5spauto --start 1900100 --stop 1900200\n  python3 5spauto --resume"
+    )
+    
+    parser.add_argument('--start', type=int, default=1900000, help='The Student ID to start the scan from (default: 1900000)')
+    parser.add_argument('--stop', type=int, default=1999999, help='The Student ID to stop the scan at (default: 1999999)')
+    parser.add_argument('--resume', action='store_true', help='Resume from the last saved ID in .batch_progress')
+    
+    args = parser.parse_args()
+            
+    await batch_lookup(args.start, args.stop, args.resume)
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        log('\n\nScan interrupted by user.', 'RED')
